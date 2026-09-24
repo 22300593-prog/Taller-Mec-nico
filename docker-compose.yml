@@ -1,0 +1,23 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: taller-oro-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: taller_oro
+      MYSQL_USER: taller_app
+      MYSQL_PASSWORD: taller_app_2026
+      MYSQL_ROOT_PASSWORD: cambia_esta_clave_root
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pcambia_esta_clave_root"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mysql_data:

@@ -2,6 +2,8 @@
 
 Este diagrama describe el flujo completo del módulo, desde la pantalla que usa el personal autorizado hasta el almacenamiento de los datos y la fotografía.
 
+Para recorrer cada fase de forma dinámica, abre [el diagrama interactivo](diagrama-interactivo-clientes.html).
+
 ```mermaid
 flowchart TB
     subgraph Vista["Vista web"]

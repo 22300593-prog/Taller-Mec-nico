@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flujo interactivo - Registro de Clientes</title>
+  <style>
+    :root { color-scheme: light; --ink:#1f2428; --paper:#f6f4ef; --line:#d7d2c7; --gold:#bb8527; --blue:#246a8c; --green:#33754c; --purple:#7650a0; --red:#aa4941; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { max-width:1120px; margin:0 auto; padding:32px 20px 48px; }
+    h1 { margin:0; font-size:30px; font-weight:700; }
+    .lead { margin:8px 0 24px; color:#59616a; }
+    .controls { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 20px; }
+    .step { min-height:40px; border:1px solid var(--line); border-radius:4px; background:#fff; color:var(--ink); padding:8px 12px; font:600 14px inherit; cursor:pointer; }
+    .step[aria-pressed="true"] { color:#fff; border-color:var(--ink); background:var(--ink); }
+    .diagram { display:grid; grid-template-columns:1fr 180px 1fr; gap:16px; align-items:center; }
+    .lane { display:grid; gap:12px; }
+    .node { min-height:92px; border:1px solid var(--line); border-left:5px solid #a2a2a2; background:#fff; padding:14px; transition:transform .22s ease,box-shadow .22s ease,border-color .22s ease; }
+    .node h2 { margin:0 0 4px; font-size:16px; }
+    .node p { margin:0; font-size:13px; color:#59616a; }
+    .node[data-group="vista"] { border-left-color:var(--blue); }
+    .node[data-group="seguridad"] { border-left-color:var(--gold); }
+    .node[data-group="negocio"] { border-left-color:var(--green); }
+    .node[data-group="datos"] { border-left-color:var(--purple); }
+    .node.active { border-color:var(--ink); transform:translateY(-3px); box-shadow:0 8px 18px #1f24281c; }
+    .node.active h2::after { content:" En uso"; color:var(--green); font-size:12px; font-weight:600; }
+    .flow { position:relative; display:grid; gap:20px; align-content:center; }
+    .flow::before { content:""; position:absolute; left:50%; top:0; bottom:0; width:2px; background:var(--line); transform:translateX(-50%); }
+    .flow-label { position:relative; z-index:1; justify-self:center; border:1px solid var(--line); border-radius:50%; background:#fff; width:46px; height:46px; display:grid; place-items:center; color:#8b8b8b; font-size:12px; font-weight:700; }
+    .flow-label.active { border-color:var(--ink); background:var(--ink); color:#fff; box-shadow:0 0 0 5px #bb852733; }
+    .explanation { margin-top:24px; border-top:1px solid var(--line); padding-top:18px; display:grid; grid-template-columns:160px 1fr; gap:20px; }
+    .explanation h2 { margin:0; font-size:16px; }
+    .explanation p { margin:0; color:#424a52; }
+    .legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:22px; color:#59616a; font-size:13px; }
+    .legend span::before { content:""; display:inline-block; width:10px; height:10px; margin-right:6px; border-radius:50%; background:var(--color); }
+    @media (max-width:720px) { .diagram { grid-template-columns:1fr; } .flow { grid-template-columns:repeat(5,1fr); } .flow::before { left:0; right:0; top:50%; bottom:auto; width:auto; height:2px; transform:translateY(-50%); } .explanation { grid-template-columns:1fr; gap:6px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Flujo interactivo del Registro de Clientes</h1>
+    <p class="lead">Selecciona una fase para recorrer la información desde la captura hasta la confirmación del registro.</p>
+    <div class="controls" role="group" aria-label="Fases del registro">
+      <button class="step" type="button" data-step="0" aria-pressed="true">1. Captura</button>
+      <button class="step" type="button" data-step="1" aria-pressed="false">2. Acceso</button>
+      <button class="step" type="button" data-step="2" aria-pressed="false">3. Validación</button>
+      <button class="step" type="button" data-step="3" aria-pressed="false">4. Guardado</button>
+      <button class="step" type="button" data-step="4" aria-pressed="false">5. Confirmación</button>
+    </div>
+
+    <section class="diagram" aria-label="Diagrama del flujo de registro">
+      <div class="lane">
+        <article class="node" data-node="pantalla" data-group="vista"><h2>Pantalla de clientes</h2><p>La Recepcionista o el Administrador captura datos y fotografía.</p></article>
+        <article class="node" data-node="sesion" data-group="seguridad"><h2>Sesión y rol</h2><p>JWT, autenticación y roles permitidos.</p></article>
+        <article class="node" data-node="ruta" data-group="negocio"><h2>Ruta API</h2><p><code>POST /api/customers</code> recibe el formulario.</p></article>
+      </div>
+      <div class="flow" aria-hidden="true"><span class="flow-label">1</span><span class="flow-label">2</span><span class="flow-label">3</span><span class="flow-label">4</span><span class="flow-label">5</span></div>
+      <div class="lane">
+        <article class="node" data-node="fachada" data-group="negocio"><h2>Facade</h2><p>Valida edad, formato, foto y registros duplicados.</p></article>
+        <article class="node" data-node="repositorio" data-group="datos"><h2>Repository y MySQL</h2><p>Guarda el expediente y prepara la relación multi-taller.</p></article>
+        <article class="node" data-node="resultado" data-group="vista"><h2>Resultado y bitácora</h2><p>Registra <code>CREATE_CUSTOMER</code> y notifica éxito.</p></article>
+      </div>
+    </section>
+
+    <section class="explanation" aria-live="polite">
+      <h2 id="phase-title">1. Captura</h2>
+      <p id="phase-description">El usuario autorizado completa nombre, contacto, edad, fecha de nacimiento, teléfonos, correos, dirección y fotografía. La pantalla envía el formulario y la imagen a la API.</p>
+    </section>
+    <div class="legend" aria-label="Leyenda"><span style="--color:var(--blue)">Vista</span><span style="--color:var(--gold)">Seguridad</span><span style="--color:var(--green)">Reglas de negocio</span><span style="--color:var(--purple)">Datos y archivos</span></div>
+  </main>
+  <script>
+    const phases = [
+      { title: '1. Captura', nodes: ['pantalla'], text: 'El usuario autorizado completa nombre, contacto, edad, fecha de nacimiento, teléfonos, correos, dirección y fotografía. La pantalla envía el formulario y la imagen a la API.' },
+      { title: '2. Acceso', nodes: ['pantalla', 'sesion', 'ruta'], text: 'La API comprueba que existe una sesión JWT válida y que el perfil corresponde a Administrador del Sistema o Recepcionista antes de continuar.' },
+      { title: '3. Validación', nodes: ['ruta', 'fachada'], text: 'El Facade valida formato de correo, teléfonos, código postal, edad frente a fecha de nacimiento, tipo y tamaño de foto, además de impedir correos y teléfonos personales duplicados.' },
+      { title: '4. Guardado', nodes: ['fachada', 'repositorio'], text: 'El Repository persiste el expediente en la tabla customers. La foto se guarda de forma privada con un nombre aleatorio y customer_workshops queda lista para asociar talleres en el futuro.' },
+      { title: '5. Confirmación', nodes: ['repositorio', 'resultado'], text: 'La API registra CREATE_CUSTOMER en audit_log y devuelve Cliente registrado exitosamente para que la pantalla muestre el aviso.' }
+    ];
+    const buttons = [...document.querySelectorAll('.step')];
+    const nodes = [...document.querySelectorAll('.node')];
+    const labels = [...document.querySelectorAll('.flow-label')];
+    const title = document.querySelector('#phase-title');
+    const description = document.querySelector('#phase-description');
+    function selectPhase(index) {
+      const phase = phases[index];
+      buttons.forEach((button, position) => button.setAttribute('aria-pressed', String(position === index)));
+      nodes.forEach((node) => node.classList.toggle('active', phase.nodes.includes(node.dataset.node)));
+      labels.forEach((label, position) => label.classList.toggle('active', position <= index));
+      title.textContent = phase.title;
+      description.textContent = phase.text;
+    }
+    buttons.forEach((button) => button.addEventListener('click', () => selectPhase(Number(button.dataset.step))));
+    selectPhase(0);
+  </script>
+</body>
+</html>

@@ -5,6 +5,7 @@ Sistema de acceso y registro de clientes para un taller mecánico: autenticació
 ## Documentación del Registro de Clientes
 
 - [Diagrama de componentes en español](docs/diagrama-componentes-clientes.md)
+- [Diagrama interactivo en español](docs/diagrama-interactivo-clientes.html)
 - [Fases realizadas](docs/fases-registro-clientes.md)
 - [Documentación técnica y endpoints](docs/registro-clientes.md)
 - [Migración para una instalación existente](database/migrations/20260928_customer_registration.sql)

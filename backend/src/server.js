@@ -4,27 +4,45 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
+import path from 'node:path';
+import multer from 'multer';
 import 'dotenv/config';
 import { db } from './db.js';
-import { authenticate, allow, audit, hashResetToken, tokenFor } from './auth.js';
+import { authenticate, allow, allowRoles, audit, hashResetToken, tokenFor } from './auth.js';
+import { CustomerRepository } from './modules/customers/customerRepository.js';
+import { CustomerRegistrationFacade } from './modules/customers/customerRegistrationFacade.js';
 
 const app = express();
 const allowedOrigins = [process.env.FRONTEND_URL || 'http://localhost:5173', 'http://127.0.0.1:5173'];
 app.use(helmet()); app.use(cors({ origin: allowedOrigins })); app.use(express.json());
 app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false }));
 
+const customerRoles = ['SYSTEM_ADMIN', 'RECEPTIONIST'];
+const customerRepository = new CustomerRepository(db);
+const customerFacade = new CustomerRegistrationFacade(customerRepository, path.resolve('uploads/customers'));
+const customerPhotoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype))
+});
+const uploadCustomerPhoto = (req, res, next) => customerPhotoUpload.single('photo')(req, res, (error) => {
+  if (!error) return next();
+  if (error.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ message: 'La fotografía no debe pesar más de 15 MB.' });
+  return res.status(400).json({ message: 'No se pudo procesar la fotografía.' });
+});
+
 async function currentUser(id) {
   const [rows] = await db.execute(`SELECT u.id,u.full_name,u.email,u.active,r.code roleCode,r.name roleName,GROUP_CONCAT(p.code) permissions
     FROM users u JOIN roles r ON r.id=u.role_id LEFT JOIN role_permissions rp ON rp.role_id=r.id LEFT JOIN permissions p ON p.id=rp.permission_id WHERE u.id=? GROUP BY u.id,u.full_name,u.email,u.active,r.code,r.name`, [id]);
   const u = rows[0]; return u && { ...u, permissions: u.permissions?.split(',').filter(Boolean) || [] };
 }
-async function ensureBoss() {
-  const [found] = await db.execute(`SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id WHERE r.code='BOSS' LIMIT 1`);
+async function ensureSystemAdministrator() {
+  const [found] = await db.execute(`SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id WHERE r.code='SYSTEM_ADMIN' LIMIT 1`);
   if (!found.length) {
     const hash = await bcrypt.hash(process.env.INITIAL_BOSS_PASSWORD || 'CambiaEstaClave2026!', 12);
-    await db.execute(`INSERT INTO users(full_name,email,password_hash,role_id) SELECT ?,?, ?,id FROM roles WHERE code='BOSS'`,
-      ['Jefe del Taller', process.env.INITIAL_BOSS_EMAIL || 'jefe@talleroro.local', hash]);
-    console.log('Cuenta inicial de Jefe creada. Cambia su contraseña tras el primer acceso.');
+    await db.execute(`INSERT INTO users(full_name,email,password_hash,role_id) SELECT ?,?, ?,id FROM roles WHERE code='SYSTEM_ADMIN'`,
+      ['Administrador del Sistema', process.env.INITIAL_SYSTEM_ADMIN_EMAIL || process.env.INITIAL_BOSS_EMAIL || 'jefe@talleroro.local', hash]);
+    console.log('Cuenta inicial de Administrador del Sistema creada. Cambia su contraseña tras el primer acceso.');
   }
 }
 
@@ -82,5 +100,39 @@ app.post('/api/users', authenticate, allow('users.manage'), async (req,res) => {
 });
 app.get('/api/audit', authenticate, allow('audit.view'), async (_req,res) => { const [rows] = await db.query(`SELECT a.*,u.full_name actor FROM audit_log a JOIN users u ON u.id=a.actor_id ORDER BY a.created_at DESC LIMIT 100`); res.json(rows); });
 
+// Vista -> Facade -> Repository: la ruta solo traduce HTTP y delega el registro.
+app.get('/api/customers', authenticate, allowRoles(...customerRoles), async (_req, res, next) => {
+  try {
+    res.json(await customerRepository.list());
+  } catch (error) {
+    next(error);
+  }
+});
+app.post('/api/customers', authenticate, allowRoles(...customerRoles), uploadCustomerPhoto, async (req, res, next) => {
+  try {
+    const result = await customerFacade.register(req.body, req.file);
+    if (!result.ok) return res.status(409).json({ message: result.message });
+    await audit(req.user.id, 'CREATE_CUSTOMER', 'CUSTOMER', String(result.id), 'Registro de cliente exitoso', null, { id: result.id, fullName: result.fullName });
+    return res.status(201).json({ message: 'Cliente registrado exitosamente.', customer: { id: result.id, fullName: result.fullName } });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    return next(error);
+  }
+});
+app.get('/api/customers/:id/photo', authenticate, allowRoles(...customerRoles), async (req, res, next) => {
+  try {
+    const filename = await customerRepository.findPhotoById(req.params.id);
+    if (!filename) return res.status(404).json({ message: 'Fotografía no encontrada.' });
+    return res.sendFile(path.resolve('uploads/customers', filename));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.use((error, _req, res, _next) => {
+  console.error(error);
+  res.status(500).json({ message: 'Ocurrió un error interno.' });
+});
+
 const port = Number(process.env.PORT || 4000);
-db.getConnection().then(async c => { c.release(); await ensureBoss(); app.listen(port, () => console.log(`API lista en http://localhost:${port}`)); }).catch(err => { console.error('No se pudo conectar a MySQL:', err.message); process.exit(1); });
+db.getConnection().then(async c => { c.release(); await ensureSystemAdministrator(); app.listen(port, () => console.log(`API lista en http://localhost:${port}`)); }).catch(err => { console.error('No se pudo conectar a MySQL:', err.message); process.exit(1); });

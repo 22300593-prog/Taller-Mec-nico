@@ -63,7 +63,8 @@ CREATE TABLE audit_log (
 );
 
 INSERT INTO roles (code, name, description) VALUES
-('BOSS', 'Jefe único', 'Control total, firma y justificación obligatoria.'),
+('SYSTEM_ADMIN', 'Administrador del Sistema', 'Administración del sistema y registro de clientes.'),
+('RECEPTIONIST', 'Recepcionista', 'Registro y consulta de clientes.'),
 ('MECHANIC', 'Mecánico', 'Checklist, estatus y solicitud de refacciones.'),
 ('CLIENT', 'Cliente', 'Consulta sus vehículos y órdenes.');
 
@@ -75,11 +76,53 @@ INSERT INTO permissions (code, description) VALUES
 ('checklists.fill', 'Completar listas de revisión'),
 ('orders.status.change', 'Cambiar estado de una orden'),
 ('parts.request', 'Solicitar refacciones'),
-('orders.view_own', 'Consultar órdenes propias');
+('orders.view_own', 'Consultar órdenes propias'),
+('customers.register', 'Registrar y consultar clientes');
 
 INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id FROM roles r CROSS JOIN permissions p WHERE r.code = 'BOSS';
+SELECT r.id, p.id FROM roles r CROSS JOIN permissions p WHERE r.code = 'SYSTEM_ADMIN';
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r JOIN permissions p ON p.code = 'customers.register' WHERE r.code = 'RECEPTIONIST';
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id FROM roles r JOIN permissions p ON p.code IN ('checklists.fill','orders.status.change','parts.request') WHERE r.code = 'MECHANIC';
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id FROM roles r JOIN permissions p ON p.code = 'orders.view_own' WHERE r.code = 'CLIENT';
+
+CREATE TABLE workshops (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(160) NOT NULL,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE customers (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  full_name VARCHAR(160) NOT NULL,
+  alternate_contact VARCHAR(160) NOT NULL,
+  age TINYINT UNSIGNED NOT NULL,
+  birth_date DATE NOT NULL,
+  personal_phone CHAR(10) NOT NULL UNIQUE,
+  work_phone CHAR(10) NULL,
+  personal_email VARCHAR(180) NOT NULL UNIQUE,
+  work_email VARCHAR(180) NULL UNIQUE,
+  street VARCHAR(160) NOT NULL,
+  neighborhood VARCHAR(120) NOT NULL,
+  municipality VARCHAR(120) NOT NULL,
+  state VARCHAR(120) NOT NULL,
+  postal_code CHAR(5) NOT NULL,
+  photo_filename VARCHAR(80) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT chk_customer_age CHECK (age <= 130)
+);
+
+-- Un cliente puede asociarse con varios talleres sin cambiar su registro base.
+CREATE TABLE customer_workshops (
+  customer_id BIGINT UNSIGNED NOT NULL,
+  workshop_id BIGINT UNSIGNED NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (customer_id, workshop_id),
+  FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+  FOREIGN KEY (workshop_id) REFERENCES workshops(id) ON DELETE RESTRICT
+);

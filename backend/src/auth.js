@@ -23,6 +23,15 @@ export async function authenticate(req, res, next) {
 export const allow = (...permissions) => (req, res, next) =>
   permissions.every(p => req.user.permissions.includes(p)) ? next() : res.status(403).json({ message: 'No tienes permiso para esta acción.' });
 
+/**
+ * Restringe una ruta a perfiles concretos. Se usa cuando la regla de negocio
+ * depende del rol y no solo de una capacidad técnica.
+ */
+export const allowRoles = (...roleCodes) => (req, res, next) =>
+  roleCodes.includes(req.user.roleCode)
+    ? next()
+    : res.status(403).json({ message: 'Tu rol no está autorizado para esta acción.' });
+
 export const audit = async (actorId, action, entityType, entityId, justification, before = null, after = null) => {
   await db.execute('INSERT INTO audit_log (actor_id,action,entity_type,entity_id,justification,before_data,after_data) VALUES (?,?,?,?,?,?,?)',
     [actorId, action, entityType, entityId, justification, before && JSON.stringify(before), after && JSON.stringify(after)]);

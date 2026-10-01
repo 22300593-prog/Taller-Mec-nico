@@ -69,7 +69,7 @@ export class CustomerRegistrationFacade {
   }
 
   async register(input, photo) {
-    const customer = this.validate(input, photo);
+    const customer = this.validate(input, photo, { requirePassword: true, requirePhoto: true });
     const duplicate = await this.repository.findDuplicate(customer);
     if (duplicate) {
       return { ok: false, message: `Ya existe un cliente registrado con esos datos: ${duplicate.full_name}.` };
@@ -95,9 +95,49 @@ export class CustomerRegistrationFacade {
     }
   }
 
-  validate(input, photo) {
-    if (!photo) validationError('La fotografía del cliente es obligatoria.');
-    if (!allowedPhotoTypes.has(photo.mimetype)) validationError('La fotografía debe ser JPG, PNG o WEBP.');
+  /**
+   * Actualiza únicamente los datos del expediente. La contraseña del cliente
+   * no viaja por este flujo y conserva el hash creado durante el registro.
+   */
+  async update(id, input, photo) {
+    const existing = await this.repository.findById(id);
+    if (!existing) return { ok: false, statusCode: 404, message: 'Cliente no encontrado.' };
+
+    const customer = this.validate(input, photo, { requirePassword: false, requirePhoto: false });
+    const duplicate = await this.repository.findDuplicate(customer, id);
+    if (duplicate) {
+      return { ok: false, statusCode: 409, message: `Ya existe un cliente registrado con esos datos: ${duplicate.full_name}.` };
+    }
+
+    let photoFilename;
+    let photoPath;
+    if (photo) {
+      await mkdir(this.photosDirectory, { recursive: true });
+      const extension = allowedPhotoTypes.get(photo.mimetype);
+      photoFilename = `${crypto.randomUUID()}${extension}`;
+      photoPath = path.join(this.photosDirectory, photoFilename);
+      await writeFile(photoPath, photo.buffer);
+    }
+
+    try {
+      const updated = await this.repository.update(id, { ...customer, photoFilename });
+      if (!updated) return { ok: false, statusCode: 404, message: 'Cliente no encontrado.' };
+      if (photoFilename && existing.photoFilename) {
+        await unlink(path.join(this.photosDirectory, existing.photoFilename)).catch(() => {});
+      }
+      return { ok: true, customer: { ...customer, id: Number(id) } };
+    } catch (error) {
+      if (photoPath) await unlink(photoPath).catch(() => {});
+      if (error.code === 'ER_DUP_ENTRY') {
+        return { ok: false, statusCode: 409, message: 'Ya existe un cliente con el mismo correo o teléfono personal.' };
+      }
+      throw error;
+    }
+  }
+
+  validate(input, photo, { requirePassword, requirePhoto }) {
+    if (requirePhoto && !photo) validationError('La fotografía del cliente es obligatoria.');
+    if (photo && !allowedPhotoTypes.has(photo.mimetype)) validationError('La fotografía debe ser JPG, PNG o WEBP.');
 
     const normalizedBirthDate = birthDate(input.birthDate);
     const age = Number(input.age);
@@ -117,10 +157,12 @@ export class CustomerRegistrationFacade {
     if (!/^\d{5}$/.test(postalCode)) validationError('El código postal debe tener exactamente 5 dígitos.');
 
     const password = input.password || '';
-    if (password.length < 12) validationError('La contraseña debe tener al menos 12 caracteres.');
-    if (Buffer.byteLength(password, 'utf8') > 72) validationError('La contraseña no puede exceder 72 bytes.');
-    if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password)) validationError('La contraseña debe incluir mayúscula, minúscula y número.');
-    if (password !== input.confirmPassword) validationError('La confirmación de contraseña no coincide.');
+    if (requirePassword) {
+      if (password.length < 12) validationError('La contraseña debe tener al menos 12 caracteres.');
+      if (Buffer.byteLength(password, 'utf8') > 72) validationError('La contraseña no puede exceder 72 bytes.');
+      if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password)) validationError('La contraseña debe incluir mayúscula, minúscula y número.');
+      if (password !== input.confirmPassword) validationError('La confirmación de contraseña no coincide.');
+    }
 
     return {
       fullName: text(input.fullName, 'El nombre completo', 160),
@@ -136,7 +178,7 @@ export class CustomerRegistrationFacade {
       municipality: text(input.municipality, 'El municipio', 120),
       state: text(input.state, 'El estado', 120),
       postalCode,
-      password
+      ...(requirePassword ? { password } : {})
     };
   }
 }

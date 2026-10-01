@@ -119,6 +119,20 @@ app.post('/api/customers', authenticate, allowRoles(...customerRoles), uploadCus
     return next(error);
   }
 });
+// Solo el Administrador del Sistema puede modificar expedientes de clientes.
+app.put('/api/customers/:id', authenticate, allowRoles('SYSTEM_ADMIN'), uploadCustomerPhoto, async (req, res, next) => {
+  try {
+    const before = await customerRepository.findById(req.params.id);
+    if (!before) return res.status(404).json({ message: 'Cliente no encontrado.' });
+    const result = await customerFacade.update(req.params.id, req.body, req.file);
+    if (!result.ok) return res.status(result.statusCode || 409).json({ message: result.message });
+    await audit(req.user.id, 'UPDATE_CUSTOMER', 'CUSTOMER', String(req.params.id), 'Actualización de expediente de cliente', before, result.customer);
+    return res.json({ message: 'Información del cliente actualizada exitosamente.', customer: result.customer });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    return next(error);
+  }
+});
 app.get('/api/customers/:id/photo', authenticate, allowRoles(...customerRoles), async (req, res, next) => {
   try {
     const filename = await customerRepository.findPhotoById(req.params.id);

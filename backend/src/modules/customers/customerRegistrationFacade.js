@@ -1,6 +1,7 @@
 import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import bcrypt from 'bcryptjs';
 
 const MAX_AGE = 130;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -81,7 +82,9 @@ export class CustomerRegistrationFacade {
     await writeFile(photoPath, photo.buffer);
 
     try {
-      const id = await this.repository.create({ ...customer, photoFilename });
+      const passwordHash = await bcrypt.hash(customer.password, 12);
+      const { password, ...customerData } = customer;
+      const id = await this.repository.create({ ...customerData, passwordHash, photoFilename });
       return { ok: true, id, fullName: customer.fullName };
     } catch (error) {
       await unlink(photoPath).catch(() => {});
@@ -113,6 +116,12 @@ export class CustomerRegistrationFacade {
     const postalCode = text(input.postalCode, 'El código postal', 5);
     if (!/^\d{5}$/.test(postalCode)) validationError('El código postal debe tener exactamente 5 dígitos.');
 
+    const password = input.password || '';
+    if (password.length < 12) validationError('La contraseña debe tener al menos 12 caracteres.');
+    if (Buffer.byteLength(password, 'utf8') > 72) validationError('La contraseña no puede exceder 72 bytes.');
+    if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password)) validationError('La contraseña debe incluir mayúscula, minúscula y número.');
+    if (password !== input.confirmPassword) validationError('La confirmación de contraseña no coincide.');
+
     return {
       fullName: text(input.fullName, 'El nombre completo', 160),
       alternateContact: text(input.alternateContact, 'El contacto alternativo', 160),
@@ -126,7 +135,8 @@ export class CustomerRegistrationFacade {
       neighborhood: text(input.neighborhood, 'La colonia', 120),
       municipality: text(input.municipality, 'El municipio', 120),
       state: text(input.state, 'El estado', 120),
-      postalCode
+      postalCode,
+      password
     };
   }
 }

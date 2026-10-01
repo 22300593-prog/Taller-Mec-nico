@@ -25,13 +25,13 @@ export class CustomerRepository {
       `INSERT INTO customers (
         full_name, alternate_contact, age, birth_date, personal_phone, work_phone,
         personal_email, work_email, street, neighborhood, municipality, state,
-        postal_code, photo_filename
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        postal_code, password_hash, photo_filename
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         customer.fullName, customer.alternateContact, customer.age, customer.birthDate,
         customer.personalPhone, customer.workPhone, customer.personalEmail,
         customer.workEmail, customer.street, customer.neighborhood, customer.municipality,
-        customer.state, customer.postalCode, customer.photoFilename
+        customer.state, customer.postalCode, customer.passwordHash, customer.photoFilename
       ]
     );
     return result.insertId;

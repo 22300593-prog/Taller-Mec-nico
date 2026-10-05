@@ -48,6 +48,80 @@ const passwordError = (password, confirmPassword) => {
 };
 function Field({ label, type = 'text', value, onChange, required, optional, help, ...props }) { return <Col md={6}><Form.Group><Form.Label>{label}{optional && <span className="optional-label">Opcional</span>}</Form.Label><Form.Control type={type} value={value} onChange={(event) => onChange(event.target.value)} required={required} {...props} />{help && <Form.Text>{help}</Form.Text>}</Form.Group></Col>; }
 
+/** Desplegables encadenados alimentados por el catálogo SEPOMEX. */
+function PostalAddressFields({ address, onChange }) {
+  const [states, setStates] = useState([]);
+  const [municipalities, setMunicipalities] = useState([]);
+  const [colonies, setColonies] = useState([]);
+  const [stateId, setStateId] = useState('');
+  const [municipalityId, setMunicipalityId] = useState('');
+  const [postalChoices, setPostalChoices] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const loadMunicipalities = async (id) => {
+    setLoading(true);
+    try { setMunicipalities(await api(`/postal/states/${id}/municipalities`)); }
+    catch (error) { setMessage(error.message); setMunicipalities([]); }
+    finally { setLoading(false); }
+  };
+  const loadColonies = async (state, municipality) => {
+    setLoading(true);
+    try { setColonies(await api(`/postal/colonies?state=${encodeURIComponent(state)}&municipality=${encodeURIComponent(municipality)}`)); }
+    catch (error) { setMessage(error.message); setColonies([]); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => {
+    api('/postal/states').then(setStates).catch((error) => setMessage(error.message));
+  }, []);
+  useEffect(() => {
+    const selected = states.find((state) => state.name === address.state);
+    if (selected && String(selected.id) !== stateId) { setStateId(String(selected.id)); loadMunicipalities(selected.id); }
+  }, [states, address.state]);
+  useEffect(() => {
+    const selected = municipalities.find((municipality) => municipality.name === address.municipality);
+    if (selected && String(selected.id) !== municipalityId) { setMunicipalityId(String(selected.id)); loadColonies(address.state, selected.name); }
+  }, [municipalities, address.municipality]);
+
+  const selectState = async (event) => {
+    const selected = states.find((state) => String(state.id) === event.target.value);
+    setStateId(event.target.value); setMunicipalityId(''); setMunicipalities([]); setColonies([]); setPostalChoices([]); setMessage('');
+    onChange({ state: selected?.name || '', municipality: '', neighborhood: '', postalCode: '' });
+    if (selected) await loadMunicipalities(selected.id);
+  };
+  const selectMunicipality = async (event) => {
+    const selected = municipalities.find((municipality) => String(municipality.id) === event.target.value);
+    setMunicipalityId(event.target.value); setColonies([]); setPostalChoices([]); setMessage('');
+    onChange({ municipality: selected?.name || '', neighborhood: '', postalCode: '' });
+    if (selected) await loadColonies(address.state, selected.name);
+  };
+  const selectColony = (event) => {
+    const selected = colonies.find((colony) => colony.name === event.target.value);
+    const choices = selected?.postalCodes || [];
+    setPostalChoices(choices);
+    onChange({ neighborhood: selected?.name || '', postalCode: choices.length === 1 ? choices[0] : '' });
+  };
+  const changePostalCode = async (value) => {
+    const postalCode = value.replace(/\D/g, '').slice(0, 5);
+    onChange({ postalCode }); setMessage(''); setPostalChoices([]);
+    if (postalCode.length !== 5) return;
+    setLoading(true);
+    try {
+      const result = await api(`/postal/codes/${postalCode}`);
+      if (!result.state || !result.municipality) { setMessage('No se encontraron datos SEPOMEX para ese código postal.'); return; }
+      const selectedState = states.find((state) => state.name === result.state);
+      const nextMunicipalities = selectedState ? await api(`/postal/states/${selectedState.id}/municipalities`) : [];
+      const selectedMunicipality = nextMunicipalities.find((municipality) => municipality.name === result.municipality);
+      setStateId(selectedState ? String(selectedState.id) : ''); setMunicipalities(nextMunicipalities); setMunicipalityId(selectedMunicipality ? String(selectedMunicipality.id) : ''); setColonies(result.colonies);
+      onChange({ state: result.state, municipality: result.municipality, neighborhood: '', postalCode });
+    } catch (error) { setMessage(error.message); }
+    finally { setLoading(false); }
+  };
+
+  return <><Col md={6}><Form.Group><Form.Label>Estado</Form.Label><Form.Select value={stateId} onChange={selectState} required disabled={!states.length || loading}><option value="">Selecciona un estado</option>{states.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</Form.Select></Form.Group></Col><Col md={6}><Form.Group><Form.Label>Municipio</Form.Label><Form.Select value={municipalityId} onChange={selectMunicipality} required disabled={!stateId || loading}><option value="">Selecciona un municipio</option>{municipalities.map((municipality) => <option key={municipality.id} value={municipality.id}>{municipality.name}</option>)}</Form.Select></Form.Group></Col><Col md={6}><Form.Group><Form.Label>Colonia</Form.Label><Form.Select value={address.neighborhood} onChange={selectColony} required disabled={!municipalityId || loading}><option value="">Selecciona una colonia</option>{colonies.map((colony) => <option key={colony.name} value={colony.name}>{colony.name}</option>)}</Form.Select></Form.Group></Col><Col md={6}><Form.Group><Form.Label>Código postal</Form.Label><Form.Control value={address.postalCode} onChange={(event) => changePostalCode(event.target.value)} required inputMode="numeric" pattern="[0-9]{5}" maxLength="5" disabled={loading} /><Form.Text>{loading ? 'Consultando catálogo SEPOMEX...' : 'Escribe 5 dígitos para completar la dirección.'}</Form.Text>{postalChoices.length > 1 && <Form.Select className="mt-2" value={address.postalCode} onChange={(event) => onChange({ postalCode: event.target.value })} required><option value="">Selecciona un código postal</option>{postalChoices.map((postalCode) => <option key={postalCode} value={postalCode}>{postalCode}</option>)}</Form.Select>}{message && <Form.Text className="text-danger d-block">{message}</Form.Text>}</Form.Group></Col></>;
+}
+
 function CustomerRegistration({ canEdit }) {
   const [customers, setCustomers] = useState([]);
   const [form, setForm] = useState(emptyCustomer);
@@ -61,16 +135,13 @@ function CustomerRegistration({ canEdit }) {
   const load = async () => { setLoading(true); try { setCustomers(await api('/customers')); } catch (requestError) { setNotice({ variant: 'danger', message: requestError.message }); } finally { setLoading(false); } };
   useEffect(() => { load(); }, []);
   const change = (key, value) => setForm((current) => ({ ...current, [key]: value, ...(key === 'birthDate' ? { age: calculateAge(value) } : {}) }));
+  const changeAddress = (values) => setForm((current) => ({ ...current, ...values }));
   const openList = () => { setForm(emptyCustomer); setPhoto(null); setMode('list'); };
   const openCreate = () => { setNotice(null); setForm(emptyCustomer); setPhoto(null); setMode('create'); };
   const openEdit = (customer) => { setNotice(null); setPhoto(null); setForm({ ...emptyCustomer, ...customer, birthDate: customer.birthDate?.slice(0, 10) || '', age: String(customer.age) }); setMode('edit'); };
   const submit = async (event) => {
     event.preventDefault();
-    if (isCreating) {
-      const invalidPassword = passwordError(form.password, form.confirmPassword);
-      if (invalidPassword) { setNotice({ variant: 'danger', message: invalidPassword }); return; }
-      if (!photo) { setNotice({ variant: 'danger', message: 'Selecciona la fotografía del cliente.' }); return; }
-    }
+    if (isCreating) { const invalidPassword = passwordError(form.password, form.confirmPassword); if (invalidPassword) { setNotice({ variant: 'danger', message: invalidPassword }); return; } if (!photo) { setNotice({ variant: 'danger', message: 'Selecciona la fotografía del cliente.' }); return; } }
     setBusy(true); setNotice(null);
     try {
       const body = new FormData();
@@ -82,7 +153,7 @@ function CustomerRegistration({ canEdit }) {
     } catch (requestError) { setNotice({ variant: 'danger', message: requestError.message }); } finally { setBusy(false); }
   };
   const title = isEditing ? 'Editar cliente' : 'Registro de clientes';
-  return <section className="customers-module"><div className="section-head customers-head"><div><p className="eyebrow">EXPEDIENTES</p><h2>{title}</h2></div><Button className="btn-gold" onClick={mode === 'list' ? openCreate : openList}><i className={`bi ${mode === 'list' ? 'bi-person-plus' : 'bi-arrow-left'} me-2`} />{mode === 'list' ? 'Registrar cliente' : 'Volver al listado'}</Button></div>{notice && <Alert variant={notice.variant} dismissible onClose={() => setNotice(null)}><i className={`bi ${notice.variant === 'success' ? 'bi-check-circle' : 'bi-exclamation-triangle'} me-2`} />{notice.message}</Alert>}{mode !== 'list' ? <Form className="customer-form" onSubmit={submit}><div className="form-section"><p className="eyebrow">DATOS PERSONALES</p><Row className="g-3"><Field label="Nombre completo" value={form.fullName} onChange={(value) => change('fullName', value)} required maxLength="160" /><Field label="Contacto alternativo" value={form.alternateContact} onChange={(value) => change('alternateContact', value)} required maxLength="160" /><Field label="Fecha de nacimiento" type="date" value={form.birthDate} onChange={(value) => change('birthDate', value)} required /><Field label="Edad" type="number" value={form.age} onChange={(value) => change('age', value)} required min="0" max="130" /><Field label="Teléfono personal" value={form.personalPhone} onChange={(value) => change('personalPhone', value)} required pattern="[0-9+() .-]{10,25}" help="10 dígitos; se acepta +52." /><Field label="Teléfono de trabajo" value={form.workPhone} onChange={(value) => change('workPhone', value)} pattern="[0-9+() .-]{10,25}" optional /><Field label="Gmail personal" type="email" value={form.personalEmail} onChange={(value) => change('personalEmail', value)} required maxLength="180" /><Field label="Gmail de trabajo" type="email" value={form.workEmail} onChange={(value) => change('workEmail', value)} optional maxLength="180" />{isCreating && <><Field label="Contraseña" type="password" value={form.password} onChange={(value) => change('password', value)} required minLength="12" maxLength="72" autoComplete="new-password" help="Mínimo 12 caracteres con mayúscula, minúscula y número." /><Field label="Confirmar contraseña" type="password" value={form.confirmPassword} onChange={(value) => change('confirmPassword', value)} required minLength="12" maxLength="72" autoComplete="new-password" /></>}<Col md={6}><Form.Group><Form.Label>Fotografía</Form.Label><Form.Control type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setPhoto(event.target.files[0] || null)} required={isCreating} /><Form.Text>{isCreating ? 'JPG, PNG o WEBP, máximo 15 MB.' : 'Opcional. Al no seleccionar una, se conserva la fotografía actual.'}</Form.Text></Form.Group></Col></Row></div><div className="form-section"><p className="eyebrow">DIRECCIÓN</p><Row className="g-3"><Field label="Calle" value={form.street} onChange={(value) => change('street', value)} required maxLength="160" /><Field label="Colonia" value={form.neighborhood} onChange={(value) => change('neighborhood', value)} required maxLength="120" /><Field label="Municipio" value={form.municipality} onChange={(value) => change('municipality', value)} required maxLength="120" /><Field label="Estado" value={form.state} onChange={(value) => change('state', value)} required maxLength="120" /><Field label="Código postal" value={form.postalCode} onChange={(value) => change('postalCode', value)} required pattern="[0-9]{5}" maxLength="5" help="5 dígitos." /></Row></div><div className="customer-actions"><Button variant="outline-secondary" onClick={openList} disabled={busy}>Cancelar</Button><Button className="btn-gold" type="submit" disabled={busy}>{busy ? <Spinner size="sm" /> : <><i className="bi bi-check2-circle me-2" />{isEditing ? 'Guardar cambios' : 'Guardar cliente'}</>}</Button></div></Form> : <Card className="table-card"><Table responsive hover><thead><tr><th>CLIENTE</th><th>CONTACTO</th><th>DIRECCIÓN</th><th>REGISTRO</th>{canEdit && <th>ACCIONES</th>}</tr></thead><tbody>{loading ? <tr><td colSpan={canEdit ? 5 : 4} className="text-center py-4"><Spinner size="sm" /> Cargando clientes...</td></tr> : customers.length ? customers.map((customer) => <tr key={customer.id}><td><b>{customer.fullName}</b><small className="d-block">{customer.personalEmail}</small></td><td>{customer.personalPhone}<small className="d-block">{customer.alternateContact}</small></td><td>{customer.street}, {customer.neighborhood}<small className="d-block">{customer.municipality}, {customer.state} C.P. {customer.postalCode}</small></td><td>{new Date(customer.createdAt).toLocaleDateString('es-MX')}</td>{canEdit && <td><Button variant="outline-secondary" size="sm" onClick={() => openEdit(customer)} aria-label={`Editar a ${customer.fullName}`} title="Editar cliente"><i className="bi bi-pencil-square" /></Button></td>}</tr>) : <tr><td colSpan={canEdit ? 5 : 4} className="text-center py-5">Aún no hay clientes registrados.</td></tr>}</tbody></Table></Card>}</section>;
+  return <section className="customers-module"><div className="section-head customers-head"><div><p className="eyebrow">EXPEDIENTES</p><h2>{title}</h2></div><Button className="btn-gold" onClick={mode === 'list' ? openCreate : openList}><i className={`bi ${mode === 'list' ? 'bi-person-plus' : 'bi-arrow-left'} me-2`} />{mode === 'list' ? 'Registrar cliente' : 'Volver al listado'}</Button></div>{notice && <Alert variant={notice.variant} dismissible onClose={() => setNotice(null)}><i className={`bi ${notice.variant === 'success' ? 'bi-check-circle' : 'bi-exclamation-triangle'} me-2`} />{notice.message}</Alert>}{mode !== 'list' ? <Form className="customer-form" onSubmit={submit}><div className="form-section"><p className="eyebrow">DATOS PERSONALES</p><Row className="g-3"><Field label="Nombre completo" value={form.fullName} onChange={(value) => change('fullName', value)} required maxLength="160" /><Field label="Contacto alternativo" value={form.alternateContact} onChange={(value) => change('alternateContact', value)} required maxLength="160" /><Field label="Fecha de nacimiento" type="date" value={form.birthDate} onChange={(value) => change('birthDate', value)} required /><Field label="Edad" type="number" value={form.age} onChange={(value) => change('age', value)} required min="0" max="130" /><Field label="Teléfono personal" value={form.personalPhone} onChange={(value) => change('personalPhone', value)} required pattern="[0-9+() .-]{10,25}" help="10 dígitos; se acepta +52." /><Field label="Teléfono de trabajo" value={form.workPhone} onChange={(value) => change('workPhone', value)} pattern="[0-9+() .-]{10,25}" optional /><Field label="Gmail personal" type="email" value={form.personalEmail} onChange={(value) => change('personalEmail', value)} required maxLength="180" /><Field label="Gmail de trabajo" type="email" value={form.workEmail} onChange={(value) => change('workEmail', value)} optional maxLength="180" />{isCreating && <><Field label="Contraseña" type="password" value={form.password} onChange={(value) => change('password', value)} required minLength="12" maxLength="72" autoComplete="new-password" help="Mínimo 12 caracteres con mayúscula, minúscula y número." /><Field label="Confirmar contraseña" type="password" value={form.confirmPassword} onChange={(value) => change('confirmPassword', value)} required minLength="12" maxLength="72" autoComplete="new-password" /></>}<Col md={6}><Form.Group><Form.Label>Fotografía</Form.Label><Form.Control type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setPhoto(event.target.files[0] || null)} required={isCreating} /><Form.Text>{isCreating ? 'JPG, PNG o WEBP, máximo 15 MB.' : 'Opcional. Al no seleccionar una, se conserva la fotografía actual.'}</Form.Text></Form.Group></Col></Row></div><div className="form-section"><p className="eyebrow">DIRECCIÓN</p><Row className="g-3"><Field label="Calle" value={form.street} onChange={(value) => change('street', value)} required maxLength="160" /><PostalAddressFields address={form} onChange={changeAddress} /></Row></div><div className="customer-actions"><Button variant="outline-secondary" onClick={openList} disabled={busy}>Cancelar</Button><Button className="btn-gold" type="submit" disabled={busy}>{busy ? <Spinner size="sm" /> : <><i className="bi bi-check2-circle me-2" />{isEditing ? 'Guardar cambios' : 'Guardar cliente'}</>}</Button></div></Form> : <Card className="table-card"><Table responsive hover><thead><tr><th>CLIENTE</th><th>CONTACTO</th><th>DIRECCIÓN</th><th>REGISTRO</th>{canEdit && <th>ACCIONES</th>}</tr></thead><tbody>{loading ? <tr><td colSpan={canEdit ? 5 : 4} className="text-center py-4"><Spinner size="sm" /> Cargando clientes...</td></tr> : customers.length ? customers.map((customer) => <tr key={customer.id}><td><b>{customer.fullName}</b><small className="d-block">{customer.personalEmail}</small></td><td>{customer.personalPhone}<small className="d-block">{customer.alternateContact}</small></td><td>{customer.street}, {customer.neighborhood}<small className="d-block">{customer.municipality}, {customer.state} C.P. {customer.postalCode}</small></td><td>{new Date(customer.createdAt).toLocaleDateString('es-MX')}</td>{canEdit && <td><Button variant="outline-secondary" size="sm" onClick={() => openEdit(customer)} aria-label={`Editar a ${customer.fullName}`} title="Editar cliente"><i className="bi bi-pencil-square" /></Button></td>}</tr>) : <tr><td colSpan={canEdit ? 5 : 4} className="text-center py-5">Aún no hay clientes registrados.</td></tr>}</tbody></Table></Card>}</section>;
 }
 
 const tiles = [['bi-clipboard-check', 'Órdenes activas', '12', '+3 hoy'], ['bi-car-front', 'Vehículos en taller', '08', '2 por entregar'], ['bi-box-seam', 'Solicitudes de refacciones', '04', '1 urgente']];

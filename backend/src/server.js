@@ -11,6 +11,8 @@ import { db } from './db.js';
 import { authenticate, allow, allowRoles, audit, hashResetToken, tokenFor } from './auth.js';
 import { CustomerRepository } from './modules/customers/customerRepository.js';
 import { CustomerRegistrationFacade } from './modules/customers/customerRegistrationFacade.js';
+import { PostalDirectoryFacade } from './modules/postal/postalDirectoryFacade.js';
+import { SepomexRepository } from './modules/postal/sepomexRepository.js';
 
 const app = express();
 const allowedOrigins = [process.env.FRONTEND_URL || 'http://localhost:5173', 'http://127.0.0.1:5173'];
@@ -20,6 +22,7 @@ app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHe
 const customerRoles = ['SYSTEM_ADMIN', 'RECEPTIONIST'];
 const customerRepository = new CustomerRepository(db);
 const customerFacade = new CustomerRegistrationFacade(customerRepository, path.resolve('uploads/customers'));
+const postalDirectory = new PostalDirectoryFacade(new SepomexRepository());
 const customerPhotoUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024, files: 1 },
@@ -99,6 +102,20 @@ app.post('/api/users', authenticate, allow('users.manage'), async (req,res) => {
   } catch { res.status(409).json({ message:'El correo ya está registrado.' }); }
 });
 app.get('/api/audit', authenticate, allow('audit.view'), async (_req,res) => { const [rows] = await db.query(`SELECT a.*,u.full_name actor FROM audit_log a JOIN users u ON u.id=a.actor_id ORDER BY a.created_at DESC LIMIT 100`); res.json(rows); });
+
+// El frontend consume nuestra API; el Facade encapsula el catálogo SEPOMEX externo.
+app.get('/api/postal/states', authenticate, allowRoles(...customerRoles), async (_req, res, next) => {
+  try { res.json(await postalDirectory.states()); } catch (error) { res.status(error.statusCode || 502).json({ message: error.message }); }
+});
+app.get('/api/postal/states/:stateId/municipalities', authenticate, allowRoles(...customerRoles), async (req, res, next) => {
+  try { res.json(await postalDirectory.municipalities(req.params.stateId)); } catch (error) { res.status(error.statusCode || 502).json({ message: error.message }); }
+});
+app.get('/api/postal/colonies', authenticate, allowRoles(...customerRoles), async (req, res, next) => {
+  try { res.json(await postalDirectory.colonies(req.query.state, req.query.municipality)); } catch (error) { res.status(error.statusCode || 502).json({ message: error.message }); }
+});
+app.get('/api/postal/codes/:postalCode', authenticate, allowRoles(...customerRoles), async (req, res, next) => {
+  try { res.json(await postalDirectory.byPostalCode(req.params.postalCode)); } catch (error) { res.status(error.statusCode || 502).json({ message: error.message }); }
+});
 
 // Vista -> Facade -> Repository: la ruta solo traduce HTTP y delega el registro.
 app.get('/api/customers', authenticate, allowRoles(...customerRoles), async (_req, res, next) => {

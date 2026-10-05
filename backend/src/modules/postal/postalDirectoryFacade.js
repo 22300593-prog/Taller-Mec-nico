@@ -29,7 +29,8 @@ const text = (value, label) => {
 const coloniesFrom = (rows) => [...new Map(rows.map((row) => [row.d_asenta, row])).values()]
   .map((row) => ({
     name: row.d_asenta,
-    postalCodes: [...new Set(rows.filter((item) => item.d_asenta === row.d_asenta).map((item) => item.d_codigo))].sort()
+    postalCodes: [...new Set(rows.filter((item) => item.d_asenta === row.d_asenta).map((item) => item.d_codigo))].sort(),
+    localities: [...new Set(rows.filter((item) => item.d_asenta === row.d_asenta).map((item) => item.d_ciudad || item.d_mnpio))]
   }))
   .sort((a, b) => a.name.localeCompare(b.name, 'es-MX'));
 
@@ -55,6 +56,7 @@ export class PostalDirectoryFacade {
     return {
       state: rows[0].d_estado,
       municipality: rows[0].d_mnpio,
+      locality: rows[0].d_ciudad || rows[0].d_mnpio,
       colonies: coloniesFrom(rows)
     };
   }

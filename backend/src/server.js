@@ -5,12 +5,16 @@ import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { mkdirSync } from 'node:fs';
 import multer from 'multer';
 import 'dotenv/config';
 import { db } from './db.js';
 import { authenticate, allow, allowRoles, audit, hashResetToken, tokenFor } from './auth.js';
 import { CustomerRepository } from './modules/customers/customerRepository.js';
 import { CustomerRegistrationFacade } from './modules/customers/customerRegistrationFacade.js';
+import { CustomerAdministrationFacade } from './modules/customers/customerAdministrationFacade.js';
+import { WorkshopFacade } from './modules/workshops/workshopFacade.js';
+import { WorkshopRepository } from './modules/workshops/workshopRepository.js';
 import { PostalDirectoryFacade } from './modules/postal/postalDirectoryFacade.js';
 import { SepomexRepository } from './modules/postal/sepomexRepository.js';
 
@@ -19,10 +23,15 @@ const allowedOrigins = [process.env.FRONTEND_URL || 'http://localhost:5173', 'ht
 app.use(helmet()); app.use(cors({ origin: allowedOrigins })); app.use(express.json());
 app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false }));
 
-const customerRoles = ['SYSTEM_ADMIN', 'RECEPTIONIST'];
+const customerRoles = ['SYSTEM_ADMIN', 'RECEPTIONIST', 'SECRETARY'];
+const customerAccessRoles = [...customerRoles, 'CLIENT'];
 const customerRepository = new CustomerRepository(db);
 const customerFacade = new CustomerRegistrationFacade(customerRepository, path.resolve('uploads/customers'));
+const customerAdministration = new CustomerAdministrationFacade(customerRepository, path.resolve('uploads/customers'));
+const workshopRepository = new WorkshopRepository(db);
+const workshopFacade = new WorkshopFacade(workshopRepository);
 const postalDirectory = new PostalDirectoryFacade(new SepomexRepository());
+const MAX_WORKSHOP_PHOTO_BYTES = 15 * 1024 * 1024 * 1024;
 const customerPhotoUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024, files: 1 },
@@ -33,6 +42,23 @@ const uploadCustomerPhoto = (req, res, next) => customerPhotoUpload.single('phot
   if (error.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ message: 'La fotografía no debe pesar más de 15 MB.' });
   return res.status(400).json({ message: 'No se pudo procesar la fotografía.' });
 });
+const workshopPhotoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, callback) => { const dir = path.resolve('uploads/workshops'); mkdirSync(dir, { recursive: true }); callback(null, dir); },
+    filename: (_req, file, callback) => callback(null, `${crypto.randomUUID()}${({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' })[file.mimetype] || ''}`)
+  }),
+  limits: { fileSize: MAX_WORKSHOP_PHOTO_BYTES, files: 1 },
+  fileFilter: (_req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype))
+});
+const uploadWorkshopPhoto = (req, res, next) => workshopPhotoUpload.single('photo')(req, res, (error) => {
+  if (!error) return next();
+  if (error.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ message: 'La fotografía del taller supera el límite configurado.' });
+  return res.status(400).json({ message: 'No se pudo procesar la fotografía del taller.' });
+});
+const customerActivity = (userId, customerId, workshopId, action, description) => db.execute(
+  'INSERT INTO actividades_clientes(usuario_id,cliente_id,taller_id,accion,descripcion) VALUES(?,?,?,?,?)',
+  [userId, customerId, workshopId, action, description]
+);
 
 async function currentUser(id) {
   const [rows] = await db.execute(`SELECT u.id,u.full_name,u.email,u.active,r.code roleCode,r.name roleName,GROUP_CONCAT(p.code) permissions
@@ -118,37 +144,72 @@ app.get('/api/postal/codes/:postalCode', authenticate, allowRoles(...customerRol
 });
 
 // Vista -> Facade -> Repository: la ruta solo traduce HTTP y delega el registro.
-app.get('/api/customers', authenticate, allowRoles(...customerRoles), async (_req, res, next) => {
+app.get('/api/customers', authenticate, allowRoles(...customerAccessRoles), async (req, res, next) => {
   try {
-    res.json(await customerRepository.list());
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(10, Math.max(1, Number(req.query.limit) || 10));
+    const status = ['ACTIVE', 'SUSPENDED'].includes(req.query.status) ? req.query.status : null;
+    res.json(await customerRepository.page({ page, limit, search: req.query.search?.trim() || null, status, workshopId: /^\d+$/.test(req.query.workshopId || '') ? req.query.workshopId : null, user: { ...req.user, sort: req.query.sort } }));
   } catch (error) {
     next(error);
   }
 });
-app.post('/api/customers', authenticate, allowRoles(...customerRoles), uploadCustomerPhoto, async (req, res, next) => {
+app.post('/api/customers', authenticate, allowRoles(...customerAccessRoles), uploadCustomerPhoto, async (req, res, next) => {
   try {
-    const result = await customerFacade.register(req.body, req.file);
-    if (!result.ok) return res.status(409).json({ message: result.message });
-    await audit(req.user.id, 'CREATE_CUSTOMER', 'CUSTOMER', String(result.id), 'Registro de cliente exitoso', null, { id: result.id, fullName: result.fullName });
-    return res.status(201).json({ message: 'Cliente registrado exitosamente.', customer: { id: result.id, fullName: result.fullName } });
+    const result = await customerAdministration.create(req.body, req.file, req.user.roleCode === 'CLIENT' ? req.user.id : null);
+    if (!result.ok) return res.status(result.statusCode || 409).json({ message: result.message });
+    await customerActivity(req.user.id, result.id, null, 'CLIENTE_CREADO', 'Registro de expediente de cliente');
+    await audit(req.user.id, 'CREATE_CUSTOMER', 'CUSTOMER', String(result.id), 'Registro de cliente exitoso', null, result.customer);
+    return res.status(201).json({ message: 'Cliente registrado exitosamente.', customer: { id: result.id, fullName: `${result.customer.firstNames} ${result.customer.firstLastName}` } });
   } catch (error) {
     if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
     return next(error);
   }
 });
 // Solo el Administrador del Sistema puede modificar expedientes de clientes.
-app.put('/api/customers/:id', authenticate, allowRoles('SYSTEM_ADMIN'), uploadCustomerPhoto, async (req, res, next) => {
+app.put('/api/customers/:id', authenticate, allowRoles('SYSTEM_ADMIN', 'CLIENT'), uploadCustomerPhoto, async (req, res, next) => {
   try {
     const before = await customerRepository.findById(req.params.id);
     if (!before) return res.status(404).json({ message: 'Cliente no encontrado.' });
-    const result = await customerFacade.update(req.params.id, req.body, req.file);
+    const result = await customerAdministration.update(req.params.id, req.body, req.user);
     if (!result.ok) return res.status(result.statusCode || 409).json({ message: result.message });
+    await customerActivity(req.user.id, req.params.id, null, 'CLIENTE_EDITADO', 'Actualización de expediente de cliente');
     await audit(req.user.id, 'UPDATE_CUSTOMER', 'CUSTOMER', String(req.params.id), 'Actualización de expediente de cliente', before, result.customer);
     return res.json({ message: 'Información del cliente actualizada exitosamente.', customer: result.customer });
   } catch (error) {
     if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
     return next(error);
   }
+});
+app.patch('/api/customers/:id/status', authenticate, allowRoles('SYSTEM_ADMIN'), async (req, res, next) => {
+  try {
+    if (req.body.status !== 'SUSPENDED') return res.status(400).json({ message: 'Solo se permite suspender clientes.' });
+    if (!await customerRepository.setStatus(req.params.id, 'SUSPENDED')) return res.status(404).json({ message: 'Cliente no encontrado.' });
+    await customerActivity(req.user.id, req.params.id, null, 'CLIENTE_SUSPENDIDO', 'Cliente suspendido sin eliminación física');
+    return res.json({ message: 'Cliente suspendido exitosamente.' });
+  } catch (error) { return next(error); }
+});
+app.put('/api/customers/:id/workshop', authenticate, allowRoles('SYSTEM_ADMIN'), async (req, res, next) => {
+  try {
+    if (!/^\d+$/.test(String(req.body.workshopId || ''))) return res.status(400).json({ message: 'El taller no es válido.' });
+    await customerRepository.replaceWorkshop(req.params.id, req.body.workshopId);
+    await customerActivity(req.user.id, req.params.id, req.body.workshopId, 'CLIENTE_CAMBIO_TALLER', 'Asociación de cliente al taller actualizada');
+    return res.json({ message: 'Taller del cliente actualizado exitosamente.' });
+  } catch (error) { return next(error); }
+});
+app.get('/api/workshops', authenticate, allowRoles(...customerRoles), async (_req, res, next) => {
+  try { return res.json(await workshopRepository.list()); } catch (error) { return next(error); }
+});
+app.post('/api/workshops', authenticate, allowRoles('SYSTEM_ADMIN'), uploadWorkshopPhoto, async (req, res, next) => {
+  try {
+    const result = await workshopFacade.create(req.body, req.file);
+    if (!result.ok) return res.status(result.statusCode || 409).json({ message: result.message });
+    await customerActivity(req.user.id, null, result.id, 'TALLER_CREADO', 'Registro de taller');
+    return res.status(201).json({ message: 'Taller registrado exitosamente.', workshop: { id: result.id, name: result.workshop.name } });
+  } catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ message: error.message }); return next(error); }
+});
+app.put('/api/workshops/:id', authenticate, allowRoles('SYSTEM_ADMIN'), uploadWorkshopPhoto, async (req, res, next) => {
+  try { const result = await workshopFacade.update(req.params.id, req.body, req.file); if (!result.ok) return res.status(result.statusCode || 409).json({ message: result.message }); await customerActivity(req.user.id, null, req.params.id, 'TALLER_EDITADO', 'Actualización de taller'); return res.json({ message: 'Taller actualizado exitosamente.' }); } catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ message: error.message }); return next(error); }
 });
 app.get('/api/customers/:id/photo', authenticate, allowRoles(...customerRoles), async (req, res, next) => {
   try {

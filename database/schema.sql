@@ -181,3 +181,13 @@ CREATE TABLE actividades_clientes (
   FOREIGN KEY (cliente_id) REFERENCES customers(id),
   FOREIGN KEY (taller_id) REFERENCES workshops(id)
 );
+
+-- Caché por consulta: evita depender de Internet sin replicar SEPOMEX completo.
+CREATE TABLE sepomex_cache (
+  cache_key VARCHAR(255) PRIMARY KEY,
+  cache_kind VARCHAR(40) NOT NULL,
+  payload JSON NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_sepomex_cache_kind (cache_kind)
+);

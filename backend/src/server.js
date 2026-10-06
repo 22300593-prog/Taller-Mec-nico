@@ -30,7 +30,7 @@ const customerRepository = new CustomerRepository(db);
 const customerAdministration = new CustomerAdministrationFacade(customerRepository, path.resolve('uploads/customers'));
 const workshopRepository = new WorkshopRepository(db);
 const workshopFacade = new WorkshopFacade(workshopRepository);
-const postalDirectory = new PostalDirectoryFacade(new SepomexRepository());
+const postalDirectory = new PostalDirectoryFacade(new SepomexRepository(db));
 export const MAX_TALLER_IMAGE_SIZE = 15 * 1024 * 1024 * 1024;
 const customerPhotoUpload = multer({
   storage: multer.memoryStorage(),

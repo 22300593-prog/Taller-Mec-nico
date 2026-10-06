@@ -5,29 +5,32 @@ const CACHE_TTL_MS = 15 * 60 * 1000;
  * SEPOMEX_API_URL por una instancia institucional o autoalojada.
  */
 export class SepomexRepository {
-  constructor(baseUrl = process.env.SEPOMEX_API_URL || 'https://sepomex.kurenn.dev/api/v1') {
+  constructor(db, baseUrl = process.env.SEPOMEX_API_URL || 'https://sepomex.kurenn.dev/api/v1') {
+    this.db = db;
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.cache = new Map();
   }
 
   async states() {
-    return this.cached('states', () => this.collection('/states'));
+    return this.cached('states', () => this.collection('/states'), 'states');
   }
 
   async municipalities(stateId) {
     return this.cached(`municipalities:${stateId}`, async () => {
       const data = await this.request(`/states/${stateId}/municipalities`);
       return data.municipalities || [];
-    });
+    }, 'municipalities');
   }
 
   async byPostalCode(postalCode) {
-    const rows = await this.collection('/zip_codes', { zip_code: postalCode });
-    return rows.filter((row) => row.d_codigo === postalCode);
+    return this.cached(`postal-code:${postalCode}`, async () => {
+      const rows = await this.collection('/zip_codes', { zip_code: postalCode });
+      return rows.filter((row) => row.d_codigo === postalCode);
+    }, 'postal-code');
   }
 
   async byStateAndMunicipality(state, municipality) {
-    return this.collection('/zip_codes', { state, city: municipality });
+    return this.cached(`municipality:${state}:${municipality}`, () => this.collection('/zip_codes', { state, city: municipality }), 'municipality');
   }
 
   async collection(path, query = {}) {
@@ -43,12 +46,34 @@ export class SepomexRepository {
     return rows;
   }
 
-  async cached(key, loader) {
+  async cached(key, loader, kind) {
     const current = this.cache.get(key);
     if (current && current.expiresAt > Date.now()) return current.value;
+    const persisted = await this.readPersisted(key);
+    if (persisted) {
+      this.cache.set(key, { value: persisted, expiresAt: Date.now() + CACHE_TTL_MS });
+      return persisted;
+    }
     const value = await loader();
+    await this.savePersisted(key, kind, value);
     this.cache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
     return value;
+  }
+
+  /** Conserva solo respuestas solicitadas, no la base nacional completa de SEPOMEX. */
+  async readPersisted(key) {
+    const [rows] = await this.db.execute('SELECT payload FROM sepomex_cache WHERE cache_key=?', [key]);
+    if (!rows[0]) return null;
+    try { return typeof rows[0].payload === 'string' ? JSON.parse(rows[0].payload) : rows[0].payload; }
+    catch { return null; }
+  }
+
+  async savePersisted(key, kind, payload) {
+    await this.db.execute(
+      `INSERT INTO sepomex_cache(cache_key,cache_kind,payload) VALUES(?,?,?)
+       ON DUPLICATE KEY UPDATE cache_kind=VALUES(cache_kind),payload=VALUES(payload),updated_at=CURRENT_TIMESTAMP`,
+      [key, kind, JSON.stringify(payload)]
+    );
   }
 
   async request(path, query = {}) {

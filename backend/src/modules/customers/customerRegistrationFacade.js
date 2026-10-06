@@ -2,6 +2,7 @@ import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
+import { normalizeEmail, normalizeText } from '../../shared/normalization.js';
 
 const MAX_AGE = 130;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -18,7 +19,7 @@ const validationError = (message) => {
 };
 
 const text = (value, name, maxLength) => {
-  const normalized = value?.trim();
+  const normalized = normalizeText(value);
   if (!normalized) validationError(`${name} es obligatorio.`);
   if (normalized.length > maxLength) validationError(`${name} excede ${maxLength} caracteres.`);
   return normalized;
@@ -26,7 +27,8 @@ const text = (value, name, maxLength) => {
 
 const email = (value, name, required = true) => {
   if (!value?.trim() && !required) return null;
-  const normalized = text(value, name, 180).toLowerCase();
+  const normalized = normalizeEmail(value);
+  if (!normalized) validationError(`${name} es obligatorio.`);
   if (!emailPattern.test(normalized)) validationError(`${name} no tiene un formato válido.`);
   return normalized;
 };

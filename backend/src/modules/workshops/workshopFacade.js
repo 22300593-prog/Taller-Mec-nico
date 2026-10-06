@@ -1,20 +1,11 @@
-import { mkdir } from 'node:fs/promises';
-
-const rfcPattern = /^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/;
-const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const fail = (message) => { const error = new Error(message); error.statusCode = 400; throw error; };
-const clean = (value, label, max = 180) => { const normalized = value?.trim().replace(/\s+/g, ' ').toLocaleUpperCase('es-MX'); if (!normalized || normalized.length > max) fail(`${label} es obligatorio o excede el límite permitido.`); return normalized; };
-const phone = (value) => { const digits = value?.replace(/\D/g, '').replace(/^52(?=\d{10}$)/, ''); if (!/^\d{10}$/.test(digits || '')) fail('El teléfono debe contener 10 dígitos mexicanos.'); return digits; };
+import { RFC_PATTERN, fail, requiredText, validEmail, validPhone, validPostalCode } from '../../shared/customerValidation.js';
 
 export class WorkshopFacade {
   constructor(repository) { this.repository = repository; }
   normalize(input) {
-    const rfc = clean(input.rfc, 'El RFC', 13);
-    if (!rfcPattern.test(rfc)) fail('El RFC no tiene un formato mexicano válido.');
-    const contactEmail = input.contactEmail?.trim().toLowerCase();
-    if (!emailPattern.test(contactEmail || '')) fail('El email de contacto no tiene un formato válido.');
-    if (!/^\d{5}$/.test(input.postalCode || '')) fail('El código postal debe tener 5 dígitos.');
-    return { name: clean(input.name, 'El nombre del taller', 160), street: clean(input.street, 'La calle', 160), neighborhood: clean(input.neighborhood, 'La colonia', 120), postalCode: input.postalCode, state: clean(input.state, 'El estado', 120), municipality: clean(input.municipality, 'El municipio', 120), locality: clean(input.locality, 'La localidad', 120), legalName: clean(input.legalName, 'La razón social', 180), phone: phone(input.phone), rfc, contactEmail, status: input.status === 'SUSPENDED' ? 'SUSPENDED' : 'ACTIVE' };
+    const rfc = requiredText(input.rfc, 'El RFC', 13);
+    if (!RFC_PATTERN.test(rfc)) fail('El RFC no tiene un formato mexicano válido.');
+    return { name: requiredText(input.name, 'El nombre del taller', 160), street: requiredText(input.street, 'La calle', 160), neighborhood: requiredText(input.neighborhood, 'La colonia', 120), postalCode: validPostalCode(input.postalCode), state: requiredText(input.state, 'El estado', 120), municipality: requiredText(input.municipality, 'El municipio', 120), locality: requiredText(input.locality, 'La localidad', 120), legalName: requiredText(input.legalName, 'La razón social', 180), phone: validPhone(input.phone, 'El teléfono'), rfc, contactEmail: validEmail(input.contactEmail, 'El email de contacto'), status: input.status === 'SUSPENDED' ? 'SUSPENDED' : 'ACTIVE' };
   }
   async create(input, photo) {
     const workshop = this.normalize(input); const duplicate = await this.repository.findDuplicate(workshop);

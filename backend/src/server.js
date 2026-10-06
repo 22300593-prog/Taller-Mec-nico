@@ -11,12 +11,13 @@ import 'dotenv/config';
 import { db } from './db.js';
 import { authenticate, allow, allowRoles, audit, hashResetToken, tokenFor } from './auth.js';
 import { CustomerRepository } from './modules/customers/customerRepository.js';
-import { CustomerRegistrationFacade } from './modules/customers/customerRegistrationFacade.js';
 import { CustomerAdministrationFacade } from './modules/customers/customerAdministrationFacade.js';
 import { WorkshopFacade } from './modules/workshops/workshopFacade.js';
 import { WorkshopRepository } from './modules/workshops/workshopRepository.js';
 import { PostalDirectoryFacade } from './modules/postal/postalDirectoryFacade.js';
 import { SepomexRepository } from './modules/postal/sepomexRepository.js';
+import { normalizeEmail, normalizeText } from './shared/normalization.js';
+import { requiredText, validEmail, validPassword } from './shared/customerValidation.js';
 
 const app = express();
 const allowedOrigins = [process.env.FRONTEND_URL || 'http://localhost:5173', 'http://127.0.0.1:5173'];
@@ -24,14 +25,13 @@ app.use(helmet()); app.use(cors({ origin: allowedOrigins })); app.use(express.js
 app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false }));
 
 const customerRoles = ['SYSTEM_ADMIN', 'RECEPTIONIST', 'SECRETARY'];
-const customerAccessRoles = [...customerRoles, 'CLIENT'];
+const postalRoles = [...customerRoles, 'CLIENT'];
 const customerRepository = new CustomerRepository(db);
-const customerFacade = new CustomerRegistrationFacade(customerRepository, path.resolve('uploads/customers'));
 const customerAdministration = new CustomerAdministrationFacade(customerRepository, path.resolve('uploads/customers'));
 const workshopRepository = new WorkshopRepository(db);
 const workshopFacade = new WorkshopFacade(workshopRepository);
 const postalDirectory = new PostalDirectoryFacade(new SepomexRepository());
-const MAX_WORKSHOP_PHOTO_BYTES = 15 * 1024 * 1024 * 1024;
+export const MAX_TALLER_IMAGE_SIZE = 15 * 1024 * 1024 * 1024;
 const customerPhotoUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024, files: 1 },
@@ -47,7 +47,7 @@ const workshopPhotoUpload = multer({
     destination: (_req, _file, callback) => { const dir = path.resolve('uploads/workshops'); mkdirSync(dir, { recursive: true }); callback(null, dir); },
     filename: (_req, file, callback) => callback(null, `${crypto.randomUUID()}${({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' })[file.mimetype] || ''}`)
   }),
-  limits: { fileSize: MAX_WORKSHOP_PHOTO_BYTES, files: 1 },
+  limits: { fileSize: MAX_TALLER_IMAGE_SIZE, files: 1 },
   fileFilter: (_req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype))
 });
 const uploadWorkshopPhoto = (req, res, next) => workshopPhotoUpload.single('photo')(req, res, (error) => {
@@ -79,7 +79,7 @@ app.get('/api/health', async (_req,res) => { try { await db.query('SELECT 1'); r
 app.post('/api/auth/login', async (req,res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ message: 'Correo y contraseña son obligatorios.' });
-  const [rows] = await db.execute(`SELECT u.*, r.code roleCode FROM users u JOIN roles r ON r.id=u.role_id WHERE u.email=?`, [email.toLowerCase().trim()]);
+  const [rows] = await db.execute(`SELECT u.*, r.code roleCode FROM users u JOIN roles r ON r.id=u.role_id WHERE u.email=?`, [normalizeEmail(email)]);
   const user = rows[0];
   if (!user?.active || !(await bcrypt.compare(password, user.password_hash))) return res.status(401).json({ message: 'Correo o contraseña incorrectos.' });
   await db.execute('UPDATE users SET last_login_at=NOW() WHERE id=?', [user.id]);
@@ -87,9 +87,31 @@ app.post('/api/auth/login', async (req,res) => {
   res.json({ token: tokenFor(user), user: await currentUser(user.id) });
 });
 app.get('/api/auth/me', authenticate, (req,res) => res.json({ user: req.user }));
+app.post('/api/auth/client-register', async (req, res, next) => {
+  try {
+    const firstNames = requiredText(req.body.firstNames, 'El nombre o nombres', 120);
+    const firstLastName = requiredText(req.body.firstLastName, 'El primer apellido', 80);
+    const secondLastName = requiredText(req.body.secondLastName, 'El segundo apellido', 80);
+    const email = validEmail(req.body.email, 'El correo');
+    const password = validPassword(req.body.password, req.body.confirmPassword);
+    const fullName = `${firstNames} ${firstLastName} ${secondLastName}`;
+    const [result] = await db.execute(
+      `INSERT INTO users(full_name,email,password_hash,role_id)
+       SELECT ?,?,?,id FROM roles WHERE code='CLIENT'`,
+      [fullName, email, await bcrypt.hash(password, 12)]
+    );
+    if (!result.affectedRows) return res.status(500).json({ message: 'No fue posible preparar el rol de cliente.' });
+    await audit(result.insertId, 'AUTH_CLIENT_REGISTER', 'USER', String(result.insertId), 'Autorregistro de cliente');
+    return res.status(201).json({ message: 'Cuenta de cliente creada. Ya puedes iniciar sesión.' });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'El correo ya está registrado.' });
+    if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+    return next(error);
+  }
+});
 
 app.post('/api/auth/password-reset/request', async (req,res) => {
-  const { email } = req.body; const [users] = await db.execute('SELECT id,role_id FROM users WHERE email=? AND active=1', [email?.toLowerCase().trim()]);
+  const { email } = req.body; const [users] = await db.execute('SELECT id,role_id FROM users WHERE email=? AND active=1', [normalizeEmail(email)]);
   const user = users[0];
   if (!user) return res.json({ message: 'Si el correo existe, se registró la solicitud.' });
   const rawToken = crypto.randomBytes(32).toString('hex');
@@ -122,29 +144,28 @@ app.post('/api/auth/password-reset/complete', async (req,res) => {
 app.get('/api/users', authenticate, allow('users.manage'), async (_req,res) => { const [rows] = await db.query(`SELECT u.id,u.full_name,u.email,u.active,u.created_at,r.code roleCode,r.name roleName FROM users u JOIN roles r ON r.id=u.role_id ORDER BY u.full_name`); res.json(rows); });
 app.post('/api/users', authenticate, allow('users.manage'), async (req,res) => {
   const { fullName,email,password,roleCode,justification } = req.body; if (!fullName||!email||!password||!roleCode||!justification) return res.status(400).json({ message: 'Todos los campos y la justificación son obligatorios.' });
-  const hash = await bcrypt.hash(password,12);
-  try { const [result] = await db.execute(`INSERT INTO users(full_name,email,password_hash,role_id) SELECT ?,?,?,id FROM roles WHERE code=?`,[fullName,email.toLowerCase(),hash,roleCode]);
+  try { validPassword(password); const [result] = await db.execute(`INSERT INTO users(full_name,email,password_hash,role_id) SELECT ?,?,?,id FROM roles WHERE code=?`,[normalizeText(fullName),validEmail(email, 'El correo'),await bcrypt.hash(password,12),roleCode]);
     if (!result.affectedRows) return res.status(400).json({ message:'Rol inválido.' }); await audit(req.user.id,'CREATE_USER','USER',String(result.insertId),justification); res.status(201).json({ id:result.insertId });
-  } catch { res.status(409).json({ message:'El correo ya está registrado.' }); }
+  } catch (error) { res.status(error.statusCode || (error.code === 'ER_DUP_ENTRY' ? 409 : 500)).json({ message: error.statusCode ? error.message : error.code === 'ER_DUP_ENTRY' ? 'El correo ya está registrado.' : 'No fue posible crear el usuario.' }); }
 });
 app.get('/api/audit', authenticate, allow('audit.view'), async (_req,res) => { const [rows] = await db.query(`SELECT a.*,u.full_name actor FROM audit_log a JOIN users u ON u.id=a.actor_id ORDER BY a.created_at DESC LIMIT 100`); res.json(rows); });
 
 // El frontend consume nuestra API; el Facade encapsula el catálogo SEPOMEX externo.
-app.get('/api/postal/states', authenticate, allowRoles(...customerRoles), async (_req, res, next) => {
+app.get('/api/postal/states', authenticate, allowRoles(...postalRoles), async (_req, res, next) => {
   try { res.json(await postalDirectory.states()); } catch (error) { res.status(error.statusCode || 502).json({ message: error.message }); }
 });
-app.get('/api/postal/states/:stateId/municipalities', authenticate, allowRoles(...customerRoles), async (req, res, next) => {
+app.get('/api/postal/states/:stateId/municipalities', authenticate, allowRoles(...postalRoles), async (req, res, next) => {
   try { res.json(await postalDirectory.municipalities(req.params.stateId)); } catch (error) { res.status(error.statusCode || 502).json({ message: error.message }); }
 });
-app.get('/api/postal/colonies', authenticate, allowRoles(...customerRoles), async (req, res, next) => {
+app.get('/api/postal/colonies', authenticate, allowRoles(...postalRoles), async (req, res, next) => {
   try { res.json(await postalDirectory.colonies(req.query.state, req.query.municipality)); } catch (error) { res.status(error.statusCode || 502).json({ message: error.message }); }
 });
-app.get('/api/postal/codes/:postalCode', authenticate, allowRoles(...customerRoles), async (req, res, next) => {
+app.get('/api/postal/codes/:postalCode', authenticate, allowRoles(...postalRoles), async (req, res, next) => {
   try { res.json(await postalDirectory.byPostalCode(req.params.postalCode)); } catch (error) { res.status(error.statusCode || 502).json({ message: error.message }); }
 });
 
 // Vista -> Facade -> Repository: la ruta solo traduce HTTP y delega el registro.
-app.get('/api/customers', authenticate, allowRoles(...customerAccessRoles), async (req, res, next) => {
+app.get('/api/customers', authenticate, allowRoles(...customerRoles), async (req, res, next) => {
   try {
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(10, Math.max(1, Number(req.query.limit) || 10));
@@ -154,9 +175,9 @@ app.get('/api/customers', authenticate, allowRoles(...customerAccessRoles), asyn
     next(error);
   }
 });
-app.post('/api/customers', authenticate, allowRoles(...customerAccessRoles), uploadCustomerPhoto, async (req, res, next) => {
+app.post('/api/customers', authenticate, allowRoles(...customerRoles), uploadCustomerPhoto, async (req, res, next) => {
   try {
-    const result = await customerAdministration.create(req.body, req.file, req.user.roleCode === 'CLIENT' ? req.user.id : null);
+    const result = await customerAdministration.create(req.body, req.file);
     if (!result.ok) return res.status(result.statusCode || 409).json({ message: result.message });
     await customerActivity(req.user.id, result.id, null, 'CLIENTE_CREADO', 'Registro de expediente de cliente');
     await audit(req.user.id, 'CREATE_CUSTOMER', 'CUSTOMER', String(result.id), 'Registro de cliente exitoso', null, result.customer);
@@ -166,12 +187,35 @@ app.post('/api/customers', authenticate, allowRoles(...customerAccessRoles), upl
     return next(error);
   }
 });
+app.get('/api/customers/me', authenticate, allowRoles('CLIENT'), async (req, res, next) => {
+  try { return res.json({ customer: await customerRepository.findByUserId(req.user.id) }); } catch (error) { return next(error); }
+});
+app.post('/api/customers/me', authenticate, allowRoles('CLIENT'), uploadCustomerPhoto, async (req, res, next) => {
+  try {
+    if (await customerRepository.findByUserId(req.user.id)) return res.status(409).json({ message: 'Tu expediente ya existe. Usa Mi perfil para actualizarlo.' });
+    const result = await customerAdministration.create(req.body, req.file, req.user.id);
+    if (!result.ok) return res.status(result.statusCode || 409).json({ message: result.message });
+    await customerActivity(req.user.id, result.id, null, 'CLIENTE_CREADO', 'Cliente completó su propio expediente');
+    await audit(req.user.id, 'CREATE_OWN_CUSTOMER_PROFILE', 'CUSTOMER', String(result.id), 'Registro de perfil propio', null, result.customer);
+    return res.status(201).json({ message: 'Tus datos se guardaron exitosamente.', customer: { id: result.id } });
+  } catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ message: error.message }); return next(error); }
+});
+app.put('/api/customers/me', authenticate, allowRoles('CLIENT'), uploadCustomerPhoto, async (req, res, next) => {
+  try {
+    const customer = await customerRepository.findByUserId(req.user.id);
+    if (!customer) return res.status(404).json({ message: 'Primero completa tu perfil de cliente.' });
+    const result = await customerAdministration.update(customer.id, req.body, req.user, req.file);
+    if (!result.ok) return res.status(result.statusCode || 409).json({ message: result.message });
+    await customerActivity(req.user.id, customer.id, null, 'CLIENTE_EDITADO', 'Cliente actualizó su propio expediente');
+    return res.json({ message: 'Tus datos se actualizaron exitosamente.', customer: result.customer });
+  } catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ message: error.message }); return next(error); }
+});
 // Solo el Administrador del Sistema puede modificar expedientes de clientes.
-app.put('/api/customers/:id', authenticate, allowRoles('SYSTEM_ADMIN', 'CLIENT'), uploadCustomerPhoto, async (req, res, next) => {
+app.put('/api/customers/:id', authenticate, allowRoles('SYSTEM_ADMIN'), uploadCustomerPhoto, async (req, res, next) => {
   try {
     const before = await customerRepository.findById(req.params.id);
     if (!before) return res.status(404).json({ message: 'Cliente no encontrado.' });
-    const result = await customerAdministration.update(req.params.id, req.body, req.user);
+    const result = await customerAdministration.update(req.params.id, req.body, req.user, req.file);
     if (!result.ok) return res.status(result.statusCode || 409).json({ message: result.message });
     await customerActivity(req.user.id, req.params.id, null, 'CLIENTE_EDITADO', 'Actualización de expediente de cliente');
     await audit(req.user.id, 'UPDATE_CUSTOMER', 'CUSTOMER', String(req.params.id), 'Actualización de expediente de cliente', before, result.customer);
@@ -183,22 +227,36 @@ app.put('/api/customers/:id', authenticate, allowRoles('SYSTEM_ADMIN', 'CLIENT')
 });
 app.patch('/api/customers/:id/status', authenticate, allowRoles('SYSTEM_ADMIN'), async (req, res, next) => {
   try {
-    if (req.body.status !== 'SUSPENDED') return res.status(400).json({ message: 'Solo se permite suspender clientes.' });
-    if (!await customerRepository.setStatus(req.params.id, 'SUSPENDED')) return res.status(404).json({ message: 'Cliente no encontrado.' });
-    await customerActivity(req.user.id, req.params.id, null, 'CLIENTE_SUSPENDIDO', 'Cliente suspendido sin eliminación física');
-    return res.json({ message: 'Cliente suspendido exitosamente.' });
+    const status = req.body.status;
+    if (!['ACTIVE', 'SUSPENDED'].includes(status)) return res.status(400).json({ message: 'El estatus no es válido.' });
+    if (!await customerRepository.setStatus(req.params.id, status)) return res.status(404).json({ message: 'Cliente no encontrado.' });
+    const suspended = status === 'SUSPENDED';
+    await customerActivity(req.user.id, req.params.id, null, suspended ? 'CLIENTE_SUSPENDIDO' : 'CLIENTE_ACTIVADO', suspended ? 'Cliente suspendido sin eliminación física' : 'Cliente activado');
+    return res.json({ message: suspended ? 'Cliente suspendido exitosamente.' : 'Cliente activado exitosamente.' });
   } catch (error) { return next(error); }
 });
 app.put('/api/customers/:id/workshop', authenticate, allowRoles('SYSTEM_ADMIN'), async (req, res, next) => {
   try {
     if (!/^\d+$/.test(String(req.body.workshopId || ''))) return res.status(400).json({ message: 'El taller no es válido.' });
+    if (!await customerRepository.findById(req.params.id)) return res.status(404).json({ message: 'Cliente no encontrado.' });
+    const workshop = await workshopRepository.findById(req.body.workshopId);
+    if (!workshop || workshop.status !== 'ACTIVE') return res.status(400).json({ message: 'El taller seleccionado no está disponible.' });
+    const previous = await customerRepository.workshopIds(req.params.id);
     await customerRepository.replaceWorkshop(req.params.id, req.body.workshopId);
-    await customerActivity(req.user.id, req.params.id, req.body.workshopId, 'CLIENTE_CAMBIO_TALLER', 'Asociación de cliente al taller actualizada');
+    await customerActivity(req.user.id, req.params.id, req.body.workshopId, previous.length ? 'CLIENTE_CAMBIO_TALLER' : 'CLIENTE_ASOCIADO_TALLER', 'Asociación de cliente al taller actualizada');
     return res.json({ message: 'Taller del cliente actualizado exitosamente.' });
   } catch (error) { return next(error); }
 });
-app.get('/api/workshops', authenticate, allowRoles(...customerRoles), async (_req, res, next) => {
-  try { return res.json(await workshopRepository.list()); } catch (error) { return next(error); }
+app.get('/api/workshops/options', authenticate, allowRoles(...customerRoles), async (_req, res, next) => {
+  try { return res.json(await workshopRepository.listActive()); } catch (error) { return next(error); }
+});
+app.get('/api/workshops', authenticate, allowRoles('SYSTEM_ADMIN'), async (req, res, next) => {
+  try {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(10, Math.max(1, Number(req.query.limit) || 10));
+    const status = ['ACTIVE', 'SUSPENDED'].includes(req.query.status) ? req.query.status : null;
+    return res.json(await workshopRepository.page({ page, limit, search: req.query.search?.trim() || null, status }));
+  } catch (error) { return next(error); }
 });
 app.post('/api/workshops', authenticate, allowRoles('SYSTEM_ADMIN'), uploadWorkshopPhoto, async (req, res, next) => {
   try {
@@ -210,6 +268,16 @@ app.post('/api/workshops', authenticate, allowRoles('SYSTEM_ADMIN'), uploadWorks
 });
 app.put('/api/workshops/:id', authenticate, allowRoles('SYSTEM_ADMIN'), uploadWorkshopPhoto, async (req, res, next) => {
   try { const result = await workshopFacade.update(req.params.id, req.body, req.file); if (!result.ok) return res.status(result.statusCode || 409).json({ message: result.message }); await customerActivity(req.user.id, null, req.params.id, 'TALLER_EDITADO', 'Actualización de taller'); return res.json({ message: 'Taller actualizado exitosamente.' }); } catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ message: error.message }); return next(error); }
+});
+app.patch('/api/workshops/:id/status', authenticate, allowRoles('SYSTEM_ADMIN'), async (req, res, next) => {
+  try {
+    const status = req.body.status;
+    if (!['ACTIVE', 'SUSPENDED'].includes(status)) return res.status(400).json({ message: 'El estatus no es válido.' });
+    if (!await workshopRepository.setStatus(req.params.id, status)) return res.status(404).json({ message: 'Taller no encontrado.' });
+    const suspended = status === 'SUSPENDED';
+    await customerActivity(req.user.id, null, req.params.id, suspended ? 'TALLER_SUSPENDIDO' : 'TALLER_ACTIVADO', suspended ? 'Taller suspendido sin eliminación física' : 'Taller activado');
+    return res.json({ message: suspended ? 'Taller suspendido exitosamente.' : 'Taller activado exitosamente.' });
+  } catch (error) { return next(error); }
 });
 app.get('/api/customers/:id/photo', authenticate, allowRoles(...customerRoles), async (req, res, next) => {
   try {

@@ -138,7 +138,7 @@ CREATE TABLE customers (
   locality VARCHAR(120) NOT NULL,
   state VARCHAR(120) NOT NULL,
   postal_code CHAR(5) NOT NULL,
-  password_hash VARCHAR(255) NOT NULL,
+  password_hash VARCHAR(255) NULL,
   photo_filename VARCHAR(80) NOT NULL,
   additional_contact_name VARCHAR(160) NOT NULL,
   additional_contact_email VARCHAR(180) NOT NULL,
@@ -146,8 +146,8 @@ CREATE TABLE customers (
   status ENUM('ACTIVE','SUSPENDED') NOT NULL DEFAULT 'ACTIVE',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  CONSTRAINT chk_customer_age CHECK (age <= 130)
-  ,FOREIGN KEY (user_id) REFERENCES users(id)
+  CONSTRAINT chk_customer_age CHECK (age <= 130),
+  FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 -- Un cliente puede asociarse con varios talleres sin cambiar su registro base.

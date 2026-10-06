@@ -2,6 +2,8 @@
 
 Este documento describe el funcionamiento implementado en la Fase 3 y complementa la especificación funcional existente. El flujo respeta la arquitectura `Vista -> API -> Facade -> Repository -> MySQL`.
 
+Para explorar cada sección, método y decisión de implementación en el navegador, abre `docs/diagrama-interactivo-clientes.html`.
+
 ## Diagrama de componentes
 
 ```mermaid

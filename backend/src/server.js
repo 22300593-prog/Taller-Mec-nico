@@ -22,6 +22,8 @@ import { requiredText, validEmail, validPassword } from './shared/customerValida
 const app = express();
 const allowedOrigins = [process.env.FRONTEND_URL || 'http://localhost:5173', 'http://127.0.0.1:5173'];
 app.use(helmet()); app.use(cors({ origin: allowedOrigins })); app.use(express.json());
+// Documentación estática del proyecto, incluida la guía interactiva de Fase 3.
+app.use('/docs', express.static(path.resolve('docs')));
 app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false }));
 
 const customerRoles = ['SYSTEM_ADMIN', 'RECEPTIONIST', 'SECRETARY'];
